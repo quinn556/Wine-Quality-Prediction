@@ -1,0 +1,668 @@
+---
+title: "Wine Quality Prediction"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Introduction
+
+In this project, I'm diving into a data set with information on various wines and their characteristics. With some exploratory data analysis and statistical inference models, I will find important variables that contribute to wine quality and then predict the quality with a health dose of machine learning models.
+
+## Load Packages and Data
+
+```{r}
+library(tidyverse)
+library(corrplot)
+library(scales)
+library(tidymodels)
+library(doParallel)
+library(themis)
+library(vip)
+
+data <- read_csv("WineQT.csv")
+```
+
+## EDA and Cleaning
+
+The data comes from Kaggle in the form of a csv. It's important to get to know the data and see what its structure is. The function below gives me all the important information I need right now. I'm dealing with 1,143 records (wines), and 14 variables. Already, I can see I'll need to alter a few things when we get into cleaning and manipulation.
+
+```{r}
+str(data)
+```
+
+I also like to use the summary function a bird's eye view of all the variables. It looks most of the wines are a 5-6 rating with a max rating of 8 and a minimum of 3. Wow, with a rating system out of 10, there isn't even a 9! The rest of the summary statistics gives great into the range of all the variables, since they are all numeric.
+
+```{r}
+summary(data)
+```
+
+Before going any further, I want to do a few things. First, let's rename all the variables with a space, as best practice is to add a "\_" instead.
+
+```{r}
+data <- data %>% 
+  rename(fixed_acidity = `fixed acidity`,
+         volatile_acidity = `volatile acidity`,
+         citric_acid = `citric acid`,
+         residual_sugar = `residual sugar`,
+         free_sulfur_dioxide = `free sulfur dioxide`,
+         total_sulfur_dioxide = `total sulfur dioxide`)
+```
+
+I also want to add a new column called "quality_group" to act as a predictor variables. I think it would be easier to predict 3 columns instead the 10 in some cases of machine learning. The split will be, any wine with a rating 4 or below is considered low quality, any wine rated 5 to 6 is considered medium quality, and anything 7 or higher is high quality wine. There are arguments to be made for different group binning, but this is just how I chose to do it.
+
+```{r}
+data <-data %>% 
+  mutate(quality_group = case_when(
+    quality >= 0 & quality <= 4 ~ "Low",
+    quality > 4 & quality <= 6 ~ "Medium",
+    quality >= 7 ~ "High"
+  ))
+
+#Making the new variable, plus others into a factor for future modeling
+data$quality_group <- as.factor(data$quality_group)
+data$quality <- as.factor(data$quality)
+data$Id <- as.character(data$Id)
+
+#Reorder variable for future visuals
+data$quality_group <- factor(data$quality_group, levels = c("Low", "Medium","High"))
+```
+
+Let's get a look at the count of our groups now. This variable is quite imbalanced and we will keep this in mind for later.
+
+```{r}
+data %>% 
+  group_by(quality_group) %>% 
+  summarize(count = n())
+```
+
+Grapes grown in cooler climates tend to have higher acidity, while warmer climates often result in lower acidity levels. Riper grapes also tend to have lower acidity
+
+### Visuals
+
+With this data, box plots will do a lot to show what variables are important to making a quality wine.
+
+I suspected that a high residual sugar may factor into the alcohol percentage, but this graph shows there is essentially no relationship. Clearly, a lot of the wines have a lower residual sugar and their alcohol percentage ranges from 6% to even 14%.
+
+```{r}
+data %>% 
+  ggplot(aes(x = residual_sugar, y = alcohol))+
+  geom_point()+
+  labs(title = "Percentage of alcohol and level of residual sugar contained in wine",
+       x = "Residual Sugar",
+       y = "Alcohol (percentage)")
+```
+
+Let's look at volatile acidity (VA), a key attribute in wine. In small amounts, VA can add complexity to flavor and contribute to a wine's aroma profile. However, high VA levels are undesirable and can lead to off-flavors and bad aromas that can be detrimental to a wine's quality.
+
+The box plot clearly shows the lower quality wines have higher levels of volatile acidity.
+
+```{r}
+data %>% 
+  ggplot(aes(x = quality_group, y = volatile_acidity, fill = quality_group))+
+  geom_boxplot(show.legend = FALSE)+
+  labs(title = "Levels of volatile acidity in wine quality groups",
+       x = "Quality Level",
+       y = "Volatile Acidity")
+
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = volatile_acidity))+
+  geom_histogram()+
+  facet_wrap(~quality_group)+
+  labs(title = "Level of volatile acidity in each wine quality group")
+```
+
+```{r}
+data %>% 
+  group_by(quality_group) %>% 
+  summarise(var(volatile_acidity))
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = quality_group, y = sulphates))+
+  geom_boxplot()+
+  labs(title = "Level of sulphates broken out by quality group")
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = quality_group, y = citric_acid))+
+  geom_boxplot()+
+  labs(title = "Level of citric acid by quality group")
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = quality_group, y = alcohol))+
+  geom_boxplot()+
+  labs(title = "Level of alcohol by quality group")
+```
+
+Visually, there are clear differences in levels of citric acid, alcohol, sulphates, and volatile acidity when you separate them by quality groups. High quality wines have higher levels of all these variables besides volatile acidity, where levels are quite low.
+
+Here is a classic correlation matrix with all the numeric variables.
+
+```{r}
+data %>% 
+  select(1:11) %>% 
+  cor() %>% 
+  corrplot()
+```
+
+Key Takeaways: - Positive correlation between the two sulfur dioxide variables - pH and fixed acidity are negatively correlated - Positive correlation fixed acidity and citric acid, as well as fixed acidity and density
+
+Let's look at these as individually graphed.
+
+```{r}
+data %>% 
+  ggplot(aes(x = density, y = fixed_acidity, color = quality_group))+
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = citric_acid, y = fixed_acidity,color = quality_group))+
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = pH, y = fixed_acidity))+
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+```{r}
+data %>% 
+  ggplot(aes(x = free_sulfur_dioxide, y = total_sulfur_dioxide))+
+  geom_point()+
+  geom_smooth(method = "lm")
+```
+
+I just want to get a sense of what most of these wine alcohol levels are. It looks like most of the wines in this data set are slightly under 10% alcohol percentage.
+
+```{r}
+data %>% 
+  ggplot(aes(x = alcohol))+
+  geom_density()
+```
+
+I'm surprised, I did not think the level of alcohol would necessarily matter much when it came to the quality of wine. Boy, was I wrong. Higher quality wine has a higher percentage of alcohol, at least in this data set. It's interesting, even though most of the wines are under 10% abv, as per the density plot, we can observe the median abv of high quality wine is closer to 12%.
+
+## Statistical Analysis
+
+ANOVA tests are great for this data set because I'm looking at the difference in means for multiple categorical variables. I'm not going to dive too deep here because the primary focus is model building and the data set is quite small so this is all I need to see that at least these variables are quite significant.
+
+```{r}
+mod <- aov(volatile_acidity ~ quality_group, data = data)
+
+mod2 <- aov(sulphates ~ quality_group, data = data)
+
+mod3 <- aov(alcohol ~ quality_group, data = data)
+
+summary(mod)
+
+summary(mod2)
+
+summary(mod3)
+```
+
+```{r}
+TukeyHSD(mod)
+```
+
+## Models Using TidyModels
+
+Here's the main focus of the project, implementing machine learning models to predict quality of wine group given the set of variables.
+
+### Data Split
+
+Now I need to split the data into my testing set and training set. Below I get rid of the Id and quality columns since quality group is built from quality and Id is not necessary. Also, you always want to set a seed to make sure the results are reproducible.
+
+```{r}
+df <- data %>% 
+  select(-Id,-quality)
+
+set.seed(222)
+
+split <- initial_split(df,strata = quality_group) #strata is always predictor
+train <- training(split)
+test <- testing(split)
+
+#Get a look at the break down of the split
+split
+```
+
+The usemodels package is nice to pair with tidymodels because it shows me a bare skeleton of the code I may want to use for the modeling process. It outputs boiler plate code, providing the structure for a workflow. I've never used it before, so I am just trying it out for random forest using the ranger engine.
+
+```{r}
+library(usemodels)
+
+use_ranger(quality_group ~., data = train)
+```
+
+### Recipe Creation
+
+Here I'm creating the recipe we will use for any models going forward. This is the preprocessing step to get our data model ready. See notes in code for some more detail (also for myself in the future). The recipe, workflow, etc. setup is standard for tidymodels.
+
+The preprocessing step is extremely important in model building and tidymodels makes it simple and effictive.
+
+```{r}
+
+tidy_rec <- recipe(quality_group ~.,data = train) %>% 
+  step_center(all_predictors(),-all_nominal()) %>% 
+  step_scale(all_predictors(),-all_nominal()) %>% 
+  step_impute_knn(volatile_acidity) %>% #fills any Na values using knn
+  step_range(all_predictors(),-all_nominal(),min = 0,max = 1) %>% #normalize data
+  step_corr(all_numeric_predictors(),threshold = .8) %>% #could also use the tune() function
+  step_dummy(all_nominal_predictors(), one_hot = T)
+  #step_dummy(all_nominal(),-all_outcomes(), one_hot = T) gets factor variables into consistent format, but #the -all outcomes says I do not want to do this on our outcome variable (quality_group). maybe also do
+#all_nominal_predictors instead for step_dummy
+
+#See what the recipe did on the training data
+prep <- prep(tidy_rec)
+
+juiced <- juice(prep)
+```
+
+### Create Model Specifications
+
+Since this is a classification problem, I'll want to try two different model types and see which performs the best. I'll be using random forest and xgboost gradient boosting. The great thing about tidymodels is that it makes tuning hyperparameters easy to do with a few lines of code.
+
+A useful tip for myself and R Studio users reading this, if you go to the "Addins" drop down and select "Generate parsnip model specifications", it will give me an interface to help figure out what type of engine to use. It's extremely useful.
+
+Here is where I'll set the number of trees, say that I'm doing a classification model, etc.
+
+XGBoost performs best when all the hyperparameters are tuned and trained at different values, then choose which one did best.
+
+```{r}
+#Random Forest
+
+rand_spec <- rand_forest(
+  mtry = tune(),
+  trees = 2000,
+  min_n = tune()
+) %>% 
+  set_mode("classification") %>% #Set to either classification or regression
+  set_engine("randomForest")#Set the engine means just pick the package to use
+
+
+#XGBoost
+
+boost_spec <- boost_tree(
+  trees = 500,
+  tree_depth = tune(), min_n = tune(), loss_reduction = tune(),
+  learn_rate = tune(),
+  sample_size = tune(), mtry = tune()
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+```
+
+For xgboost. Here are all the possible hyper parameters to train the data on.What values are we going to try? Well let's do some tuning. I could use grid_regular here or max entropy, but I'll choose grid latin hypercube.
+
+To tune I'll enter in all the parameters I said I wanted to tune in the above function.
+
+```{r}
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),#needs to be proportion, typically it could be sample_size for other functions
+  finalize(mtry(),train),#Since I do not know the mtry, I have to use finalize mtry with the data to find max #
+  learn_rate(),
+  size = 25 #Can always change this to train more than 20 models
+)
+
+xgb_grid
+```
+
+Now out of all these 25 model combinations, we will train the model and see what performs best on the data.
+
+### Creating Cross Validation Resamples
+
+Here I'm using k folds cross validation for the resampling method. Further down I implement the bootstrap method.
+
+```{r}
+set.seed(555)
+
+#Strata would be what we're predicting and v is k
+cv <- vfold_cv(train, v = 10, strata = quality_group)
+
+```
+
+### Running Workflows to Check Models
+
+Workflows are a tidymodels feature that just makes it easier to move the models around to try different tuning parameters, etc.
+
+```{r}
+
+#Random forest workflow
+rand_wf <- workflow() %>% 
+  add_recipe(tidy_rec) %>% 
+  add_model(rand_spec)
+
+#Xgboost workflow
+boost_wf <- workflow() %>% 
+  add_formula(quality_group ~.) %>% 
+  add_model(boost_spec)
+
+```
+
+### Tuning and Training Both Models
+
+Now we need some data to tune on. Here I'm using cross validation.
+
+Let's tune the models and see what parameters work the best!
+
+```{r}
+
+set.seed(45632)
+
+#random forest
+rand_tune <- tune_grid(
+  rand_wf,
+  resamples = cv,
+  grid = 10
+)
+
+#xgboost tuning process
+registerDoParallel()
+
+set.seed(222)
+
+xgb_res <- tune_grid(
+  boost_wf,
+  resamples = cv,
+  grid = xgb_grid,
+  control = control_grid(save_pred = TRUE)
+)
+
+xgb_res
+```
+
+Models are done, tuned, and ready. Let's see what parameters were chosen.
+
+### Exploring Model Results
+
+#### XGBoost
+
+```{r}
+xgb_res %>% 
+  collect_metrics()
+```
+
+Let's see a plot of ROC for all the models and how they performed with the various different metrics.
+
+```{r}
+xgb_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean,mtry:sample_size) %>% 
+  pivot_longer(mtry:sample_size,
+               names_to = "parameter",
+               values_to = "value") %>% 
+  ggplot(aes(value,mean, color = parameter))+
+  geom_point(show.legend = FALSE)+
+  facet_wrap(~parameter, scales = "free_x")+
+  labs(x = "ROC")
+```
+
+```{r}
+#Lets see the five best models
+xgb_res %>% 
+show_best(metric = "roc_auc")
+
+#Now lets select the best model
+best_auc_boost <- select_best(xgb_res, metric = "roc_auc")
+
+best_auc_boost
+
+#Now finalize the model and get it ready to use on the test set
+final_xgb <- finalize_workflow(boost_wf, best_auc_boost)
+
+final_xgb
+```
+
+Great! The xgboost model is done and in the Main Arguments section, it shows the best tuned parameters.
+
+I want to see what the gradient boosting model says the most important variables are when predicting the quality group for the wine.
+
+```{r}
+final_xgb %>% 
+  fit(data = train) %>% 
+  pull_workflow_fit() %>% 
+  vip(geom = "point")
+```
+
+#### Random Forest
+
+I find this quite notable. According to the gradient boosting method, alcohol is the most important predictor. Following far behind is volatile acidity, which I suspected would be more important.
+
+```{r}
+rand_tune %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mean,mtry, min_n) %>% 
+  pivot_longer(min_n:mtry,
+               names_to = "parameter",
+               values_to = "value") %>% 
+  ggplot(aes(x = value,y = mean, color = parameter))+
+  geom_point(show.legend = FALSE)+
+  facet_wrap(~parameter, scales = "free_x")+
+  labs(x = "ROC")
+```
+
+Let me try doing an updated tuned model for random forest based on this AUC
+
+```{r}
+rf_grid <- grid_regular(
+  mtry(range = c(2,12)),
+  min_n(range = c(2,6)),
+  levels = 10
+)
+
+
+registerDoParallel()
+set.seed(45632)
+
+#random forest
+rand_tune_update <- tune_grid(
+  rand_wf,
+  resamples = cv,
+  grid = rf_grid
+)
+
+
+
+```
+
+#### Evaluate on test set of data
+
+Ok, with the xgboost model trained and tuned to the best performance, it's time to evaluate it on that test data we separated before. Again, I love tidymodels because the process is standard and easy when using different machine learning models.
+
+```{r}
+final_boost_result <- last_fit(final_xgb, split)
+
+final_boost_result %>% 
+  collect_metrics()
+```
+
+Not horrible here. The ROC is at 83% and the accuracy is 85%. I feel like that could be better though. It does not look like there is any over fitting so that's good.
+
+```{r}
+#Making a confusion matrix
+final_boost_result %>% 
+  collect_predictions() %>% 
+  conf_mat(quality_group, .pred_class)
+```
+
+#### Random Forest
+
+Let's look at the results of that first model
+
+```{r}
+rand_tune %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc")
+```
+
+Now let me check the results of the second tuning model I did.
+
+```{r}
+rand_tune_update %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  mutate(min_n = factor(min_n)) %>% 
+  ggplot(aes(mtry,mean,color = min_n))+
+  geom_line(alpha = 0.5, size = 1)+
+  geom_point()
+```
+
+Select the best updated random forest model
+ 
+```{r}
+rand_tune_update %>% 
+  select_best(metric = "roc_auc")
+```
+
+#Last fit and finalize rf
+
+```{r}
+Best_roc_rand <- select_best(rand_tune, metric = "roc_auc")
+
+final_rf <- finalize_model(
+  rand_spec,
+  Best_roc_rand
+)
+
+final_wf_rand <- workflow() %>% 
+  add_recipe(tidy_rec) %>% 
+  add_model(final_rf)
+```
+
+Now I'll use last fit to fit the final best model of random forest to the training data and evaluate it on the test data for final predictions.
+
+```{r}
+final_random_forest_model <- final_wf_rand %>% 
+  last_fit(split)#just needs that splitting object created in the beginning of this process
+```
+
+Now it's time to collect the final metrics to see how the model performed on the test data.
+
+```{r}
+final_random_forest_model %>% 
+  collect_metrics()
+```
+
+Looks like we have a final roc of 85% and final accuracy of 86%. Not too bad, that's a respectable prediction model.
+
+# Bootstrapping with Random Forest
+
+In this extra section, I utilize the bootstrap method for sampling since the data set is relatively small and I think this data set may benefit from that.
+
+I need to create the actual bootstrap split.
+```{r}
+boot <- bootstraps(train, strata = quality_group)
+```
+
+Let me create a new recipe for this model just to make any changes easier to keep track of. Usually, I can just reuse the same recipe (the beauty of tidymodels), but I find this a bit neater. I'll be doing essentially the same recipe steps for preprocessing. 
+```{r}
+rand2_rec <- recipe(quality_group ~.,data = train) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_range(all_predictors(),-all_nominal(),min = 0,max = 1) %>% #normalize
+  step_dummy(all_nominal(),-all_outcomes(), one_hot = T) %>% 
+  step_smote(quality_group) #Balances out variable since there are a huge number of medium quality
+```
+
+Prepping and juicing the recipe below, just to make sure everything looks good. Yes, prepping and juicing is standard tidymodels jargon.
+```{r}
+#Acts as a check to look at what we did to our recipe
+prep <- prep(rand2_rec)
+
+#juice(prep)
+```
+
+Again, here is a new model specification object with 1000 trees and a new workflow combining everything.
+
+```{r}
+rand2_spec <- rand_forest(trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger")#Use ranger here because it is good with multiclass classification
+ 
+rand2_wf <- workflow() %>% 
+  add_recipe(rand2_rec) %>% 
+  add_model(rand2_spec) 
+```
+
+Alrighty, with everything prepped and ready. It's time to create the model with the bootstrap resampling from earlier.
+
+```{r}
+#create model with bootsraps
+random_forest2_result_model <- fit_resamples(
+  rand2_wf,
+  resamples = boot,
+  control = control_resamples(save_pred = T,verbose = T))
+```
+
+## Bootstrapped Model Evaluation
+
+```{r}
+collect_metrics(random_forest2_result_model)
+
+#Could also use this code to see individual metrics
+#show_best(random_forest2_result_model, metric = "roc_auc")
+#show_best(random_forest2_result_model, metric = "accuracy")
+```
+
+```{r}
+#Predictions
+random_forest2_result_model %>% 
+  collect_predictions() %>% #Just this on its own will give me a data set of the predicted values
+  conf_mat(quality_group,.pred_class)
+```
+
+## Variable Importance for Bootstrapped Model
+
+With random forest classification using bootstrapping, volatile acidity and alcohol heavily influence the quality of wine group. 
+
+```{r}
+rand2_spec %>% 
+  set_engine("ranger", importance = "permutation") %>% 
+  fit(
+    quality_group ~., data = juice(prep)
+  ) %>% 
+  vip(geom = "point")
+  
+```
+
+## Final Fitting for Bootstrapped Model
+
+Hmmm it looks like our models only performed ok. I'm not happy with ~82% usually, but for the sake of this worksheet and wanting to work on different data, I am going to call it here.
+
+```{r}
+final_rf_boot_wf <- workflow() %>% 
+  add_recipe(rand2_rec) %>% 
+  add_model(rand2_spec)
+
+#Again, all this needs to fit the data on the training and evaluate on the test is the split object.
+final_rf_res <- final_rf_boot_wf %>% 
+  last_fit(split)
+
+final_rf_res %>% 
+  collect_metrics()
+```
+
+# Conclusion
+
+In this project I looked at wines with varying quality and the factors that determine said quality. The qualities were grouped together for better modeling. I performed random forest and gradient boosting models. Then I tried the bootstrapping method with random forest to see if that would change performance. Models performed okay, with more time, I would probably get a more accurate prediction.
+
+I discovered the two most important variables usually are the alcohol percentage and level of volatile acidity when it comes to wine quality. Chances are if it's high in alcohol and low in volatile acidity, you're in for some good drinking.
